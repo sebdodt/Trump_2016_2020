@@ -1,0 +1,534 @@
+---
+title: "ST309 Group Project Methodology (Data Analysis)"
+output:
+  pdf_document: default
+  html_document: default
+  geometry: left=1.5cm,right=1.5cm,top=2cm,bottom=2cm
+  word_document:
+    highlight: default
+---
+
+**Preparation**
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+rm(list=ls())
+setwd("~/Documents/R/ST309/ST309 Project/R Code and Output")
+#please change this to your working directory with the data
+train<-read.csv("train.csv")
+dim(train)
+sum(is.na(train))
+test<-read.csv("test.csv")
+sum(is.na(test))
+dim(test)
+train_and_test <- read.csv("train_and_test.csv")
+sum(is.na(train_and_test))
+dim(train_and_test)
+library(stargazer)
+library(tidyverse)
+library(broom)
+library(knitr)
+library(ggplot2)
+```
+
+There are no more missing values after we have cleaned our dataset. We see that we have 3111 observations in total, with 2111 observations in the test dataset and 1000 observations in the training dataset. 
+
+**Preliminary Analysis**
+
+First we used stargazer package to see an overview of the summary statistics for all variables in our data.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+stargazer(train_and_test,type="text",
+          title="Training and Test Data Key Summary Statistics")
+```
+
+Next, for the data description section of our report, we focused specifically to understand “voter_movement_to_GOP", our main dependent variable of interest. We first found the five-point summary for this variable and then produced a histogram.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+#5 Number Summary Statistics for the variable
+summary(train_and_test$voter_movement_to_GOP)
+```
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+#Histogram
+ggplot(train_and_test, aes(voter_movement_to_GOP, fill=voter_movement_to_GOP>0))+
+  scale_fill_manual(values = c("blue", "red"))+
+  geom_histogram(binwidth = 0.01, breaks = seq(-0.15, 0.29, by = 0.003))+
+  ggtitle("Histogram of 'voter_movement_to_GOP'")
+```
+
+Finally, based on maps which we produced in Tableau, we suspected that there might be a positive correlation between covid variables ("cases_per_100000", "deaths_per_100000"and "voter_movement_to_GOP"). Therefore in our preliminary analysis, we produced a simple correlation matrix of these variables as summarized below. 
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+correlation.matrix <- cor(train_and_test[,c("cases_per_100000","deaths_per_100000","voter_movement_to_GOP")])
+stargazer(correlation.matrix, type="text",title="Correlation Matrix")
+```
+
+**Part One 2-Class Classification**
+
+First, we create a binary variable "GOP_increase" in both training and test data.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+GOP_increase = test$voter_movement_to_GOP>0
+test = cbind(test,GOP_increase)
+test$GOP_increase = as.factor(test$GOP_increase)
+GOP_increase = train$voter_movement_to_GOP>0
+train = cbind(train,GOP_increase)
+train$GOP_increase = as.factor(train$GOP_increase)
+dim(train)
+dim(test)
+```
+
+Next, we remove redundant variables from the training dataset. This includes variables which we have used to construct our dependent variable "voter_movement_to_GOP" and demographic variables we included for reference but based on our subject knowledge are not suitable for explaining increase in share of votes for parties at county level.This leaves us with 50 variables in total ("GOP_increase", "voter_movement_to_GOP" and 48 potential predictors)
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+train1 <- subset(train, select=-c(State,FIPS,per_GOP_2020,per_Dem_2020,per_diff_2020,per_GOP2016,
+                            per_Dem_2016,per_diff_2016,County,MedHHInc,cases,deaths,TotalPopEst2019,
+                            TotalPopEst2015,TotalPopEst2016,AvgHHSize,TotalHH,X,ForeignBornNum))
+dim(train1)
+``` 
+
+
+**Simple Classification Tree**
+
+We start by constructing a simple classification tree.
+
+```{r,fig.height=15,fig.width=15,message=FALSE,warning=FALSE,comment="",prompt=T}
+library(tree)
+simple_tree=tree(GOP_increase~.-voter_movement_to_GOP, data=train1)
+summary(simple_tree)
+plot(simple_tree)
+text(simple_tree, pretty=0.5, cex=0.5)
+```
+
+Now we conduct the cost-benefit analysis on training data to find the apppriate cut-off probability. We assume symmetrical costs for false positives and false negatives. 
+
+```{r,fig.height=6,fig.width=8, message=FALSE,warning=FALSE,comment="",prompt=T}
+predTrain.tree = predict(simple_tree, train1, type="vector")[,2]
+#False positives and false negatives are treated equally
+CB = matrix(c(0,-1,-1,0),nrow=2,byrow=T) 
+a = seq(0.01,0.95,0.01)
+expected.profit = vector(length = length(a))
+for(i in 1:length(a)) {
+  pred = ifelse((predTrain.tree>=a[i]),"GOP_increase", "GOP_decrease")
+  confusion = table(pred, train1$GOP_increase, deparse.level = 2) 
+  expected.profit[i] = sum(CB*confusion)/sum(confusion)
+}
+plot(a,expected.profit, type="l",lwd=3, xlab="Cut-off Probability", 
+     ylab="Misclassification rate in training data", main="Accuracy of Tree")
+```
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+a[expected.profit==max(expected.profit)]
+```
+
+A natural choice is hence $\hat{a}$ = 0.5 as our cut-off probability.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+a.hat = 0.5
+```
+
+This allows us to calculate misclassification rate of our simple tree on test data.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+predTest.tree = predict(simple_tree, test, type="vector")[,2]
+pred = ifelse((predTest.tree>=a.hat),"GOP_increase","GOP_decrease")
+confusion = table(pred, test$GOP_increase, deparse.level = 2)
+confusion
+(confusion[1,2]+confusion[2,1])/sum(confusion)
+```
+
+We define a true positive as the case where both the simple tree and the test data tell us there is an increase in Trump's vote share ("GOP_increase" is TRUE). The misclassification error rate for our simple tree is 18%  
+
+
+**Bagging**
+
+Next, we tried to improve our simple tree with bagging and random forest.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+library(randomForest)
+set.seed(1)
+bag.tree = randomForest(GOP_increase~.-voter_movement_to_GOP,data=train1,mtry=48,importance=T) 
+#We have 50 variables in total
+#so removing GOP_increase and voter_movement_to_GOP gives us mtry=48
+bag.tree
+```
+
+The confusion matrix can be calculated as followed:
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+pred = predict(bag.tree, newdata=test)
+confusion2 = table(pred,test$GOP_increase, deparse.level = 2)
+confusion2
+(confusion2[1,2]+confusion2[2,1])/sum(confusion2)
+```
+
+Bagging has a misclassifcation rate of 14%.
+
+
+**Random Forest**
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+set.seed(1)
+rf.tree = randomForest(GOP_increase~.-voter_movement_to_GOP,data=train1,mtry=7,importance=T) 
+#Random forest uses m=sqrt(p), which is apprxoimately 7 in this case
+rf.tree
+```
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+pred = predict(rf.tree, newdata=test)
+confusion2 = table(pred,test$GOP_increase, deparse.level = 2)
+confusion2
+(confusion2[1,2]+confusion2[2,1])/sum(confusion2)
+```
+
+We have a misclassification rate of 13% after using Random Forest.
+
+
+
+**KNN**
+
+We also used 3-KNN and 5-KNN Classifiers to account for potential nonlinear relationships between our predictors and Trump's vote share on the county-level. 
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+library(dplyr)
+Xtrain = select(train,-c(State,FIPS,per_GOP_2020,per_Dem_2020,per_diff_2020,per_GOP2016,
+                         per_Dem_2016,per_diff_2016,per_diff_2016,County,MedHHInc,cases,
+                         deaths,TotalPopEst2019,AvgHHSize,TotalHH,
+                         voter_movement_to_GOP,GOP_increase))
+Xtest = select(test,-c(State,FIPS,per_GOP_2020,per_Dem_2020,per_diff_2020,
+                       per_GOP2016,per_Dem_2016,per_diff_2016,per_diff_2016,
+                       County,MedHHInc,cases,deaths,TotalPopEst2019,AvgHHSize,
+                       TotalHH,voter_movement_to_GOP,GOP_increase))
+dim(Xtrain)
+dim(Xtest)
+
+D=-cor(t(Xtest), t(Xtrain))+1
+inDex=matrix(nrow=nrow(D), ncol=5)
+for (i in 1:nrow(D)) inDex[i,]=sort.int(D[i,], index.return = T)$ix[1:5]
+predKNN=matrix(nrow=nrow(D), ncol=2)
+Y = train$GOP_increase
+Y = as.logical(Y)
+for(i in 1:nrow(D)) predKNN[i,]=c(mean(Y[inDex[i,1:3]]), mean(Y[inDex[i,]]))
+```
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+#3-NN
+pred = ifelse((predKNN[,1]>=0.5),TRUE,FALSE)
+confusion = table(pred,test$GOP_increase, deparse.level = 2)
+confusion
+(confusion[1,2]+confusion[2,1])/sum(confusion)
+```
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+#5-NN
+pred = ifelse((predKNN[,2]>=0.5),TRUE,FALSE)
+confusion = table(pred,test$GOP_increase, deparse.level = 2)
+confusion
+(confusion[1,2]+confusion[2,1])/sum(confusion)
+```
+
+The misclassification rates are 19% and 18% for 3-NN and 5-NN, respectively.  
+
+
+**Summary of Classification Models and Evaluation**
+
+Finally, we use ROC curve to compare all classifiers.
+
+```{r,fig.height=6,fig.width=8, message=FALSE,warning=FALSE,comment="",prompt=T}
+#Simple_Tree
+predTest.simple = predict(simple_tree, newdata=test, type="vector")[,2]
+#Bagging
+predTest.bag = predict(bag.tree, newdata=test, type="prob")[,2]
+#Random Forest
+predTest.rf = predict(rf.tree, newdata=test, type="prob")[,2]
+#KNN is simply predKNN
+
+library(ROCR)
+pred5=prediction(data.frame(predKNN, predTest.simple, predTest.bag, predTest.rf), 
+                 data.frame(test$GOP_increase, test$GOP_increase,
+                            test$GOP_increase,test$GOP_increase,test$GOP_increase))
+roc=performance(pred5, measure ="tpr", x.measure ="fpr")
+plot(roc, col=as.list(c("red","blue","green", "grey","brown")), 
+     main="ROC curves of 5 classifiers")
+legend(0.8, 0.4, c("3-NN","5-NN","simple_tree", "bagging", "R. Forest"), 
+       col=c("red","blue","green", "grey","brown"), lty=c(0,1,1,1,1))
+abline(0,1)
+```
+
+We will also calculate the AUC (Area under the Curve) values for thse classifers
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+performance(pred5, measure ="auc")@y.values
+which.max(performance(pred5, measure ="auc")@y.values)
+```
+
+The maximum AUC value is 0.888 and comes from the Random Forest model. Since Random Forest also has the lowest misclassfication rate among all the models we tried, this is our best classification model for predicting whether a county experienced an increase or decrease in vote share for Trump between 2016 and 2020.
+
+From the Random Forest, we see that the following variables are important indicators of whether or not there has been an increase in the share of votes for the Republicans between 2020 and 2016.
+
+
+```{r,fig.height=6,fig.width=8,message=FALSE,warning=FALSE,comment="",prompt=T}
+varImpPlot(rf.tree, col=c("blue","red"), cex=1)
+```
+
+
+
+
+
+**Part Two Linear Regression Models**
+
+
+First, we remove redundant variables from the training dataset. This includes variables which we have used to construct our dependent variable "voter_movement_to_GOP" and demographic variables we included for reference but based on our subject knowledge are not suitable for explaining increase in share of votes for parties at county level.
+
+Because this is a linear model, we will also exclude the binary y-variable outcome "GOP_increase" and one category from Employment and Education variables （“PctEmpInformation“ and ”Ed3SomeCollegePct”） in order to avoid the problem of perfect collinearity.This leaves us with 47 variables ("voter_movement_to_GOP" and 46 potential predictors).
+
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+train2 <- subset(train,select=-c(State,FIPS,per_GOP_2020,per_Dem_2020,per_diff_2020,
+                per_GOP2016,per_Dem_2016,per_diff_2016,County,MedHHInc,cases,deaths,
+                TotalPopEst2019,TotalPopEst2015,TotalPopEst2016,AvgHHSize,TotalHH,X,
+                ForeignBornNum,PctEmpInformation,Ed3SomeCollegePct,GOP_increase))
+dim(train2)
+```
+
+We decide to use best subset selection criteria to select our variables for the linear model. Best subset calculation is computationally intensive and setting the nvmax=46 will be infeasible for the computer to handle. At the same time, a model with 46 variable is also unlikely to be a good model given the difficulty in interpretation. After discussion within the team, we eventually agreed on a reasonable value being nvmax=10.
+
+Caution: Even with nvmax=10, the following code takes around 2-3 minutes to run.
+
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+library(leaps)
+subset.train=regsubsets(voter_movement_to_GOP~., data=train2, nvmax=10)
+summary(subset.train)
+```
+
+
+**Mathematical Adjustments (BIC, Cp and Adjusted R-squared)**
+
+Although best subset selection gives us the best model in terms of RSS (or training error), this is not a good estimate of the test error. So now we use two alternative approaches to estimate the test error.
+
+Our first approach is to use mathematical adjustments (BIC, Cp and Adjusted R-squared) to adjust the RSS and estimate test error indirectly.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+which.min(summary(subset.train)$bic) 
+#We prefer BIC than AIC because the BIC will give us a simpler model
+#BIC criterion suggests 10 variables
+which.min(summary(subset.train)$cp)
+#Cp criterion also recommends the model with 10 variables
+which.max(summary(subset.train)$adjr2)
+#Adjusted-R-squared criterion also recommends the model with 10 variables
+```
+
+We can also plot the ranking of all models according to BIC, Cp, Adjr2 criteria. We see that all three criteria yield similar result.
+
+```{r,message=FALSE,warning=FALSE,fig.height=10, fig.width=10, warning=FALSE, comment="", prompt=T}
+par(mfrow=c(1,3))
+#BIC plot
+plot(subset.train,scale="bic", col="blue")
+#Cp plot
+plot(subset.train,scale="Cp", col="red")
+#Adjr2 plot
+plot(subset.train,scale="adjr2", col="dark green")
+```
+
+So the 10 coefficients in the best linear model according bic, cp and adjusted R-squared is   
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+coef(subset.train,10)
+```
+
+We will store this model for comparison later.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+lm_math=lm(voter_movement_to_GOP~PctEmpManufacturing+PctEmpServices+NetMigrationRate1019
+           +NaturalChangeRate1019+Age65AndOlderPct2010+HispanicPct2010+NonEnglishHHPct
+           +Ed5CollegePlusPct+FemaleHHPct+ForeignBornCentralSouthAmPct, data=train2)
+tidy(lm_math)
+```
+
+**Cross Validation**
+
+The second approach we used is to perform a 10th-fold cross-validation to directly estimate the test error. 10-th fold cross-validation means instead of doing a binary split (validation and training data) once, we divide the data into 10 folds, take out one fold as the validation dataset each time and use the rest as training data. With each of the 10 splits, we calculate the RSS and the sum of all RSS divided by 10 is the cross-validation error.
+
+First, we create the empty matrix for storing cv errors.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+folds=rep(1:10, length=nrow(train2)) 
+table(folds) 
+length(folds)
+set.seed(1) #essential to maintain consistency
+folds=sample(folds, replace=F);folds #add randomness to this group number
+```
+
+Next, we use the CV function "predict.regsubsets.r" from Moodle.
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+predict.regsubsets=function(object ,newdata ,id){
+form=as.formula(object$call[[2]])
+mat=model.matrix(form ,newdata )
+coefi=coef(object, id=id)
+xvars=names (coefi)
+mat[,xvars]%*% coefi
+}
+```
+
+Then we apply this function to conduct cross-validation exercise. 
+Caution: because there is a loop within a loop, the following code takes around 5-10 minutes to run.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+cv.errors=matrix(nrow=10, ncol=10)
+for(j in 1:10) {
+    best.fit=regsubsets(voter_movement_to_GOP~., data=train2[folds!=j,], nvmax=10)
+    for(i in 1:10) {
+    pred=predict(best.fit, train2[folds==j,], id=i)
+    cv.errors[j,i]=mean((train2$voter_movement_to_GOP[folds==j]-pred)^2)
+    }
+}
+```
+
+Now we find which model has the minimum cv error.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+cvErrors=apply(cv.errors, 2, mean)
+cvErrors
+which.min(cvErrors)
+```
+
+Since the cv criterion says that the model with the minimum cv error is the best, we should select the model with 7 variables.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+coef(best.fit, 7)
+```
+
+This allows us to build a linear model with these 7 cv variables.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+lm_cv <- lm (voter_movement_to_GOP~NetMigrationRate1019+HispanicPct2010+NonEnglishHHPct+
+              Ed5CollegePlusPct+FemaleHHPct+ForeignBornCentralSouthAmPct+cases_per_100000, 
+             data=train2)
+tidy(lm_cv)
+```
+
+**Summary of Linear Models and Evaluation**  
+
+We can summarize the two linear models in a table below.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+stargazer(lm_math,lm_cv,type="text",algin=T,title="Comparing Linear Models", ci=T,ci.level=0.95, single.row=T)
+```
+
+From the table above, we observe that all coefficients are statistically significant and both models can explain around 35-36% variation in the dependent variable. Next, we examined the residual plots of these models 
+
+*Residual Plot for BIC,Cp and Ajr2 Model *
+
+```{r fig.height=10, fig.width=10, prompt=T}
+par(mfrow=c(2,2))
+plot(lm_math)
+```
+
+*Residual Plot for CV Model*
+
+```{r fig.height=10, fig.width=10, prompt=T}
+par(mfrow=c(2,2))
+plot(lm_cv)
+```
+
+For both models, we observe there are some bad leverage points which indicates the potential problem of underfitting in our model. 
+
+Next, we checked for problems of multicollinearity. We find no problems of multicollinearity because the VIF values are relatively small. 
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+library(olsrr)
+ols_vif_tol(lm_math)
+ols_vif_tol(lm_cv)
+```
+
+Finally, we evaluated the performance of the two linear models on test data by calculating their actual test Mean Squared Error (MSE).
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+y.test=test$voter_movement_to_GOP
+
+#Model selected based on Mathematical Adjustment (BIC, Cp and Adjr2)
+math.pred=predict(lm_math, test)
+MSE_math = mean((math.pred-y.test)^2)
+
+#CV Model
+cv.pred= predict(lm_cv, test)
+MSE_cv = mean((cv.pred-y.test)^2)
+
+#We can compare the performance of our models to the benchmark 
+#of using the average training y-value to predict the y-value in testing data
+ytrain.avg=mean(train2$voter_movement_to_GOP)
+MSE_avg=mean((ytrain.avg-y.test)^2)
+
+lmCompare <- matrix(c(MSE_avg, MSE_math, MSE_cv),ncol=1,byrow=T)
+rownames(lmCompare) <- c("Average y-value in training", "BIC,Cp and Adjr2 Model",
+                         "CV Model")
+colnames(lmCompare) <- c("Test Mean Squared Error (MSE)")
+lmCompare <- as.table(lmCompare); lmCompare
+```
+
+We can see that clearly both the model selected BIC, Cp and Adjr2 and CV model outperform the benchmark model of using average y-value in training data. Given the similar performance of both models on training and test data, overall we prefer CV model because of its simplicity with fewer number of predictors.
+
+
+**Interpreting the CV Model**
+
+In order to make the interpretation easier, we applied two transformations to the CV model. 
+
+First, many independent variables (e.g. HispanicPct2010) are percentages expressed in percentage points (range from 0 to 100). However, the dependent variable “voter_movement_to_GOP” is percentages expressed in decimals (its absolute value ranges from 0 to 1). Hence we multiplied the dependent variable by 100 to also express it in percentage points. This scaled up all beta coefficient estimates by 100. 
+
+Next, the new beta coefficient estimates tells us that 1 unit change in each predictor is responsible for BETA percentage points increase in Trump’s vote share. This implies that for 1 percentage point increase in Trump’s vote share, we need 1/BETA unit change in each predictor. Since this interpretation makes it easier for us to analyse how each predictor explains changes in Trump’s vote share, we calculated reciprocals of all beta coefficients. 
+
+The transformed regression table is summarized below.
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+lm_cv_transformed <- lm (100*voter_movement_to_GOP~NetMigrationRate1019+HispanicPct2010+NonEnglishHHPct+
+              Ed5CollegePlusPct+FemaleHHPct+ForeignBornCentralSouthAmPct+cases_per_100000, 
+             data=train2)
+coef_cv_transformed <- 1/coef(lm_cv_transformed)
+stargazer(lm_cv_transformed,coef=list(coef_cv_transformed),ci=T,ci.level=0.95,type="text",algin=T,title="Interpreting the CV Model",single.row=T)
+```
+
+Finally, we produced two more graphs to assist our interpretations. 
+
+The first graph is produced for analyzing the variable ForeignBornCentralSounthAmPct: 
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+cvtable = tidy(lm_cv)
+Hiscoeff = as.numeric(cvtable[3,2])
+Forcoeff = as.numeric(cvtable[7,2])
+intersec = (-Hiscoeff*100)/Forcoeff
+x=seq(0,35,1)
+y=(x*Forcoeff+Hiscoeff*100)*100
+data.frame(cbind(x,y)) %>%
+  ggplot(aes(x=x,y=y)) +
+  geom_line() + 
+  ggtitle("Predicted voter shift in a 100% Hispanic county") + 
+  xlab("Percentage of immigrants (born in South and Central America, excluding Cuba)") +
+  ylab("Increase of Trump's share of votes in percentage points") +
+  geom_hline(yintercept=0,linetype="dotted") +
+  geom_point(aes(x=intersec,y=0))
+```
+
+The second graph is produced for analyzing the variable NetMigrationRate1019:
+
+```{r,message=FALSE,warning=FALSE,comment="",prompt=T}
+migration = vector(length = 9)
+ruralness = seq(1,9,1)
+for (i in 1:9) {
+  a = train_and_test %>%
+    filter(ruralurban_cc==i)
+  migration[i] = mean(a$NetMigrationRate1019)
+}
+data = data.frame(migration,ruralness)
+ggplot(data, aes(x=ruralness, y=migration)) +
+  geom_line(stat="identity") +
+  geom_point(aes(x=ruralness, y=migration)) +
+  ggtitle("Average net migration and ruralness of county") + 
+  xlab("") +
+  ylab("net migration rate") +
+  theme(axis.title.y = element_text(size = 8)) +
+  geom_hline(yintercept=0,linetype="dotted") +
+  scale_x_discrete(limits=c("urban","2","3","4","suburban","6","7","8","rural"))
+```
+
+

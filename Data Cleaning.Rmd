@@ -1,0 +1,251 @@
+---
+title: "ST309 Group Project Methodology (Data Cleaning)"
+output:
+  pdf_document: default
+  html_notebook: default
+  word_document: default
+---
+
+**Merging election datasets**
+
+Datasource for 2020 US presidential election results ("GitHub 2020 Main Dataset.csv") is:
+https://github.com/tonmcg/US_County_Level_Election_Results_08-20
+
+Datasource for 2016 US presidential election results ("MIT Election Lab 2000-2016 Dataset.csv") is:
+https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+
+Setting Working Directory and loading packages and dataset
+```{r}
+setwd("~/OneDrive/Uni/SOAS University of London/Modules/year 3/Elementary Data Analytics/Group Project/Datasets/all datasets")
+library(readr)
+results2020 = read_csv("GitHub 2020 Main Dataset.csv")
+results2016 = read_csv("MIT Election Lab 2000-2016 Dataset.csv")
+```
+
+Cleaning 2020 data
+```{r}
+results2020$county_fips = as.integer(results2020$county_fips)
+```
+
+Cleaning 2016 data
+```{r}
+per_candidate = results2016[,9]/results2016[,10] 
+results2016 = cbind(results2016,per_candidate)
+results2016$party <- as.factor(results2016$party)
+results2016 = na.omit(results2016)
+results2016 = results2016[results2016[,1]==2016,]
+results2016.GOP = results2016[results2016[,8]=="republican",]
+results2016.GOP = results2016.GOP[order(results2016.GOP[,2],results2016.GOP[,5]),]
+results2016.GOP = results2016.GOP[-1609,] #Kansas City missing in 2020 data
+#Oglala Lakota County is wrongly called 46113 instead of 46102 in 2016 data
+results2016.GOP[2428,5] = 46102 
+results2016.GOP = results2016.GOP[order(results2016.GOP[,2],results2016.GOP[,5]),]
+results2016.Dem = results2016[results2016[,8]=="democrat",]
+results2016.Dem = results2016.Dem[order(results2016.Dem[,2],results2016.Dem[,5]),]
+results2016.Dem = results2016.Dem[-1609,] 
+results2016.Dem[2428,5] = 46102 
+results2016.Dem = results2016.Dem[order(results2016.Dem[,2],results2016.Dem[,5]),]
+per_diff_2016 = results2016.GOP[,12]-results2016.Dem[,12]
+```
+
+Create dependent variable
+```{r}
+voter_movement = results2020$per_gop-results2016.GOP[,12] #change in support for GOP
+```
+
+Create one big matrix with all election data
+```{r}
+resultsall = results2020[,c(1,2,3,8,9,10)]
+resultsall = cbind(resultsall,results2016.GOP[,12],results2016.Dem[,12],
+                   per_diff_2016,voter_movement)
+colnames(resultsall) = c("State","FIPS","County","per_GOP_2020","per_Dem_2020",
+                         "per_diff_2020","per_GOP2016","per_Dem_2016",
+                         "per_diff_2016","voter_movement_to_GOP")
+resultsall = resultsall[-c(68:107),] # removing Alaska
+```
+
+Export as csv
+```{r}
+write.csv(resultsall,"election_data.csv")
+```
+
+
+
+**Merging predictors**
+
+We have multiple datasources for our predictors.
+
+To capture the influence of covid-19 at county-level, we used cumulative counts of covid cases and deaths in each county published by The New York Times on Github: https://github.com/nytimes/covid-19-data
+
+Set new working directory and import covid variables:
+```{r}
+NYTCases <-read.csv("NYT Nov3rd Covid.csv")
+dim(NYTCases)
+
+
+#We selected the election date (11.03.2020) as the cut-off point
+NYTNovThird <- subset(NYTCases,date=="2020-11-03")
+dim(NYTNovThird)
+
+
+#We save this as a new dataset
+write.csv(NYTNovThird,"NYT Nov3rd Covid.csv") 
+
+covid = read_csv("NYT Nov3rd Covid.csv") #We import this data into our working directory
+```
+
+Next we imported datasets containing other relevant demographic variables.
+
+("Jobs.csv","Income.csv","People.csv") are demographic variables taken from Atlas of Rural and Small Town America provided by the Economic Research Service (ERS) of the US Department of Agriculture.
+The datasource is: https://www.ers.usda.gov/data-products/atlas-of-rural-and-small-town-america/download-the-data/
+
+("MIT Election Lab 2016 Pres with Demographic Variables.csv") comes from MIT Election Lab 2018 Election Analysis Dataset, which is originally designed as a complementary dataset for analyzing the 2018 US General Election. However, we believe that these variables will also be relevant for our focus on the 2016 and 2020 US Presidential Elections.
+The datasource is: https://github.com/MEDSL/2018-elections-unoffical/blob/master/election-context-2018.md
+
+Now we import all these new data into our working directory.
+```{r}
+setwd("~/OneDrive/Uni/SOAS University of London/Modules/year 3/Elementary Data Analytics/Group Project/Datasets/all datasets")
+#ERS Rural Atlas Data
+covid = NYTNovThird
+income_data = read_csv("Income.csv")
+job_data = read_csv("Jobs.csv")
+people = read_csv("People.csv")
+
+#MIT Election Lab Analysis Dataset
+rural = read_csv("MIT Election Lab 2016 Pres with Demographic Variables.csv")
+```
+
+Then we clean and export income data: remove summary data for each state and remove states Alaska (because voting districts are not the counties) and Puerto Rico (because they are not allowed to vote).
+```{r}
+income_data = income_data[-c(1,2),]
+income_data = income_data[-c(68:102),]
+income_data = income_data[-83,]
+income_data = income_data[-158,]
+income_data = income_data[-216,]
+income_data = income_data[-280,]
+income_data = income_data[-288,]
+income_data = income_data[-c(291, 293, 361, 521, 527, 572, 675, 768, 868, 974,
+                             1095, 1160, 1177, 1202, 1217, 1301, 1389, 1472,
+                             1588, 1645, 1739, 1757, 1768, 1790, 1824, 1887, 
+                             1988, 2042, 2131, 2209, 2246, 2314, 2320, 2367, 2434, 
+                             2530, 2785, 2815, 2830, 2965, 3005, 3061, 3134, 3158),]
+income_data = income_data[-520,]
+income_data = income_data[-2887,]
+income_data = income_data[-c(3113:3190),]
+write.csv(income_data,"income_final.csv")
+```
+
+Clean and export job data
+```{r}
+job_data = job_data[-c(1, 2, 70, 104, 120, 196, 255, 320, 329, 333, 335, 403, 563, 
+                       569, 614, 717, 810, 910, 1016, 1137, 1202, 1219, 1244, 1259, 
+                       1343, 1431, 1514, 1630, 1687, 1781, 1799, 1810, 1832, 1866, 
+                       1929, 2030, 2084, 2173, 2251, 2288, 2356, 2362, 2409, 2476, 
+                       2572, 2827, 2857, 2872, 3007, 3047, 3103, 3176, 3200),]
+job_data = job_data[!(job_data$State=="AK"),]
+job_data = job_data[!(job_data$State=="PR"),]
+job_data = job_data[!(job_data$FIPS==15005),]
+job_data = job_data[!(job_data$FIPS==51515),]
+write.csv(job_data,"Jobs_final.csv")
+```
+
+Clean and export covid data: Add seven rows that are missing
+Sources:https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/state/new-york
+
+```{r}
+covid = na.omit(covid)
+covid = covid[!(covid$state=="Alaska"),]
+covid = covid[order(covid$fips),]
+covid = covid[-c(3106:3110),]
+missing1 = c(700000, "03/11/2020", "Esmerelda", "Nevada", 32009, 0, 0)
+missing2 = c(700000, "03/11/2020", "Bronx", "New York", 36005, 56165, 4997)
+missing3 = c(700000, "03/11/2020", "Kings", "New York", 36047, 76663, 7409)
+missing4 = c(700000, "03/11/2020", "New York", "New York", 36061, 36980, 3198)
+missing5 = c(700000, "03/11/2020", "Queens", "New York", 36081, 78013, 7297)
+missing6 = c(700000, "03/11/2020", "Richmond", "New York", 36085, 17777, 1097)
+missing7 = c(700000, "03/11/2020", "Loving", "Texas", 48301, 0, 0)
+covid = rbind(covid,missing1,missing2,missing3,missing4,missing5,missing6,missing7)
+covid$fips = as.integer(covid$fips)
+covid = covid[order(covid$fips),]
+write.csv(covid,"covid_final.csv")
+```
+
+Clean and export people data
+```{r}
+people = people[-c(1, 2, 70, 100, 116, 192, 251, 316, 325, 329, 331, 399, 559, 565, 
+                   610, 713, 806, 906, 1012, 1133, 1198, 1215, 1240, 1255, 1339, 
+                   1427, 1510, 1626, 1683, 1777, 1795, 1806, 1828, 1862, 1925, 
+                   2026, 2080, 2169, 2247, 2284, 2352, 2358, 2405, 2472, 2568, 
+                   2823, 2853, 2868, 3002, 3042, 3098, 3171),]
+people = people[!(people$State=="AK"),]
+people = people[!(people$State=="PR"),]
+people = people[!(people$FIPS==15005),]
+people = people[!(people$FIPS==51515),]
+people = people[order(people$FIPS),]
+write.csv(people,"people_final.csv")
+```
+
+Clean and export rural-urban code
+```{r}
+rural = rural[-c(1799,2888),]
+rural = rural[,39]
+write.csv(rural,"rural_code_final.csv")
+```
+
+**Merging election data with predictors**
+
+Delete FIPS and State columns
+```{r}
+income_data = income_data[,-c(1,2)]
+job_data = job_data[,-c(1,2)]
+covid = covid[,-c(4,5)]
+people = people[,-c(1,2)]
+```
+
+Create new variables for proportional covid cases and deaths
+```{r}
+alldata = cbind(resultsall,income_data,job_data,covid,people,rural)
+alldata$cases = as.numeric(alldata$cases)
+cases_per_100000 = alldata$cases*100000/alldata$TotalPopEst2019
+alldata$deaths = as.numeric(alldata$deaths)
+deaths_per_100000 = alldata$deaths*100000/alldata$TotalPopEst2019
+alldata = cbind(alldata,cases_per_100000,deaths_per_100000)
+```
+
+Export data
+```{r}
+write.csv(alldata,"alldata_final.csv")
+```
+
+Add variable with employment change over Trump presidency
+```{r}
+PctEmpChange1619 = (alldata[,21]-alldata[,24])/alldata[,24]
+alldata = cbind(alldata,PctEmpChange1619)
+```
+
+Deleting not needed predictors
+```{r}
+usefuldata_1 = alldata[,-c(3, 13, 14, 17:20, 22:23, 24, 25:28, 31:32, 43:90, 93, 
+                           95, 100:103, 113:124, 139, 141:146, 148:153, 156, 
+                           158:175, 178:181)]
+```
+
+Delete NAs
+```{r}
+usefuldata = na.omit(usefuldata_1)
+nrow(usefuldata_1)-nrow(usefuldata)
+```
+Only one observation is lost by removing NAs.
+
+Split in training and testing data and export
+```{r}
+set.seed(1)
+trainrows = sample(1:nrow(usefuldata),1000)
+train = usefuldata[trainrows,]
+test = usefuldata[-trainrows,]
+write.csv(train,"train.csv")
+write.csv(test,"test.csv")
+write.csv(usefuldata,"train_and_test.csv")
+```
+
+
